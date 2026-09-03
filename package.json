@@ -1,0 +1,19 @@
+{
+  "name": "independent-video",
+  "private": true,
+  "version": "0.0.1",
+  "packageManager": "npm@10",
+  "workspaces": [
+    "apps/*",
+    "worker",
+    "modules/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"No tests configured yet\""
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
