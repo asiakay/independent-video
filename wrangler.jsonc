@@ -8,7 +8,16 @@
     {
       "binding": "DB",
       "database_name": "independent-video",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+      "database_id": "a15c1a79-9b97-4b1f-ae45-e1899b3104a2",
+      "migrations_dir": "./database/migrations"
     }
-  ]
+  ],
+  "assets": {
+    "directory": "./apps/studio",
+    "binding": "ASSETS",
+    "run_worker_first": [
+      "/api/*",
+      "/health"
+    ]
+  }
 }
