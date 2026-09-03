@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Independent Video Studio</title>
+    <style>
+      :root { font-family: Inter, system-ui, sans-serif; color-scheme: light dark; }
+      body { margin: 0; background: Canvas; color: CanvasText; }
+      main { max-width: 760px; margin: 0 auto; padding: 2rem 1rem 4rem; }
+      form, section { display: grid; gap: 1rem; }
+      label { display: grid; gap: .4rem; font-weight: 600; }
+      input, textarea, button { font: inherit; padding: .75rem; }
+      textarea { min-height: 7rem; }
+      button { cursor: pointer; }
+      .row { display: flex; gap: .75rem; flex-wrap: wrap; }
+      .status { padding: .75rem; border: 1px solid currentColor; border-radius: .5rem; }
+      .muted { opacity: .7; }
+      progress { width: 100%; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Creator Studio</h1>
+      <p class="muted">Creator 001 · Channel 001</p>
+
+      <form id="upload-form">
+        <label>Title <input id="title" name="title" required /></label>
+        <label>Description <textarea id="description" name="description"></textarea></label>
+        <label>Video file <input id="file" name="file" type="file" accept="video/*" required /></label>
+        <button type="submit">Upload video</button>
+      </form>
+
+      <section id="workflow" hidden>
+        <h2>Workflow</h2>
+        <div id="status" class="status">Waiting…</div>
+        <progress id="progress" max="100" value="0"></progress>
+        <div class="row">
+          <button id="sync" type="button">Check processing</button>
+          <button id="publish" type="button" disabled>Publish</button>
+        </div>
+        <pre id="result"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
