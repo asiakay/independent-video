@@ -1,0 +1,5 @@
+{
+  "name": "@independent-video/worker",
+  "private": true,
+  "type": "module"
+}
