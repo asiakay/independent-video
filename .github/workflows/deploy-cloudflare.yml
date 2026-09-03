@@ -54,7 +54,12 @@ jobs:
           const fs = require('fs');
           const path = 'wrangler.jsonc';
           const config = JSON.parse(fs.readFileSync(path, 'utf8'));
-          config.d1_databases = [{ binding: 'DB', database_name: 'independent-video', database_id: process.env.DATABASE_ID }];
+          config.d1_databases = [{
+            binding: 'DB',
+            database_name: 'independent-video',
+            database_id: process.env.DATABASE_ID,
+            migrations_dir: './database/migrations'
+          }];
           config.assets = { directory: './apps/studio', binding: 'ASSETS', run_worker_first: ['/api/*', '/health'] };
           fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
           NODE
