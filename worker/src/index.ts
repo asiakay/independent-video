@@ -1,6 +1,6 @@
 import { D1VideoRepository, type D1DatabaseLike } from "../../infrastructure/cloudflare/d1/video.repository";
 import { CloudflareStreamAdapter } from "../../infrastructure/cloudflare/stream/cloudflare-stream";
-import type { Video } from "../../modules/media/video";
+import type { Video, VideoStatus } from "../../modules/media/video";
 
 interface Env {
   CLOUDFLARE_ACCOUNT_ID: string;
@@ -31,6 +31,13 @@ export default {
       return handleListVideos(env);
     }
 
+    if (request.method === "POST" && url.pathname.startsWith("/api/videos/") && url.pathname.endsWith("/sync")) {
+      const value = decodeURIComponent(
+        url.pathname.slice("/api/videos/".length, -"/sync".length),
+      );
+      return handleSyncVideo(value, env);
+    }
+
     if (request.method === "GET" && url.pathname.startsWith("/api/videos/")) {
       const value = decodeURIComponent(url.pathname.slice("/api/videos/".length));
       return handleGetVideo(value, env);
@@ -50,11 +57,7 @@ async function handleCreateUpload(request: Request, env: Env): Promise<Response>
 
     const body = await readJson<UploadRequestBody>(request);
     const videos = new D1VideoRepository(env.DB);
-    const media = new CloudflareStreamAdapter({
-      accountId: env.CLOUDFLARE_ACCOUNT_ID,
-      apiToken: env.CLOUDFLARE_STREAM_API_TOKEN,
-      customerCode: env.CLOUDFLARE_STREAM_CUSTOMER_CODE,
-    });
+    const media = createMedia(env);
 
     const videoId = `video_${crypto.randomUUID()}`;
     const now = new Date().toISOString();
@@ -132,16 +135,8 @@ async function handleGetVideo(value: string, env: Env): Promise<Response> {
   try {
     assertDatabase(env);
 
-    if (!value) {
-      return json({ error: "Video ID or slug is required" }, 400);
-    }
-
-    const videos = new D1VideoRepository(env.DB);
-    const video = value.startsWith("video_")
-      ? await videos.findById(value)
-      : await videos.findBySlug(value);
-
-    if (!video || video.channelId !== CHANNEL_ID) {
+    const video = await findVideo(value, env);
+    if (!video) {
       return json({ error: "Video not found" }, 404);
     }
 
@@ -150,6 +145,86 @@ async function handleGetVideo(value: string, env: Env): Promise<Response> {
     const message = error instanceof Error ? error.message : "Unexpected catalog error";
     return json({ error: message }, 500);
   }
+}
+
+async function handleSyncVideo(value: string, env: Env): Promise<Response> {
+  try {
+    assertEnv(env);
+
+    const videos = new D1VideoRepository(env.DB);
+    const video = await findVideo(value, env);
+
+    if (!video) {
+      return json({ error: "Video not found" }, 404);
+    }
+
+    if (!video.providerAssetId) {
+      return json({ error: "Video has no media provider asset" }, 409);
+    }
+
+    if (video.status === "published") {
+      return json({ video: toVideoResource(video) });
+    }
+
+    const providerStatus = await createMedia(env).getAssetStatus(video.providerAssetId);
+    const nextStatus = mapProviderStatus(providerStatus.state, providerStatus.readyToStream);
+
+    if (nextStatus !== video.status) {
+      video.status = nextStatus;
+      video.updatedAt = new Date().toISOString();
+      await videos.save(video);
+    }
+
+    return json({
+      video: toVideoResource(video),
+      processing: {
+        state: providerStatus.state,
+        pctComplete: providerStatus.pctComplete ?? null,
+        errorReasonCode: providerStatus.errorReasonCode ?? null,
+        errorReasonText: providerStatus.errorReasonText ?? null,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected status sync error";
+    return json({ error: message }, 500);
+  }
+}
+
+async function findVideo(value: string, env: Env): Promise<Video | null> {
+  if (!value) {
+    return null;
+  }
+
+  const videos = new D1VideoRepository(env.DB);
+  const video = value.startsWith("video_")
+    ? await videos.findById(value)
+    : await videos.findBySlug(value);
+
+  return video && video.channelId === CHANNEL_ID ? video : null;
+}
+
+function mapProviderStatus(state: string, readyToStream: boolean): VideoStatus {
+  if (state === "error") {
+    return "failed";
+  }
+
+  if (readyToStream || state === "ready") {
+    return "ready";
+  }
+
+  if (state === "pendingupload") {
+    return "uploading";
+  }
+
+  return "processing";
+}
+
+function createMedia(env: Env): CloudflareStreamAdapter {
+  return new CloudflareStreamAdapter({
+    accountId: env.CLOUDFLARE_ACCOUNT_ID,
+    apiToken: env.CLOUDFLARE_STREAM_API_TOKEN,
+    customerCode: env.CLOUDFLARE_STREAM_CUSTOMER_CODE,
+  });
 }
 
 function toVideoResource(video: Video) {
