@@ -23,6 +23,35 @@ interface DirectUploadResult {
   uploadURL: string;
 }
 
+export type StreamAssetState =
+  | "pendingupload"
+  | "downloading"
+  | "queued"
+  | "inprogress"
+  | "ready"
+  | "error"
+  | "live-inprogress";
+
+export interface StreamAssetStatus {
+  providerAssetId: string;
+  readyToStream: boolean;
+  state: StreamAssetState;
+  pctComplete?: string;
+  errorReasonCode?: string;
+  errorReasonText?: string;
+}
+
+interface StreamVideoResult {
+  uid: string;
+  readyToStream?: boolean;
+  status?: {
+    state?: StreamAssetState;
+    pctComplete?: string;
+    errorReasonCode?: string;
+    errorReasonText?: string;
+  };
+}
+
 export class CloudflareStreamAdapter implements MediaProvider {
   private readonly apiBaseUrl: string;
 
@@ -49,6 +78,21 @@ export class CloudflareStreamAdapter implements MediaProvider {
     return {
       providerAssetId: result.uid,
       uploadUrl: result.uploadURL,
+    };
+  }
+
+  async getAssetStatus(providerAssetId: string): Promise<StreamAssetStatus> {
+    const result = await this.request<StreamVideoResult>(
+      `/accounts/${this.config.accountId}/stream/${providerAssetId}`,
+    );
+
+    return {
+      providerAssetId: result.uid,
+      readyToStream: result.readyToStream ?? false,
+      state: result.status?.state ?? "queued",
+      pctComplete: result.status?.pctComplete,
+      errorReasonCode: result.status?.errorReasonCode,
+      errorReasonText: result.status?.errorReasonText,
     };
   }
 
