@@ -38,6 +38,18 @@ export default {
       return handleSyncVideo(value, env);
     }
 
+    if (request.method === "POST" && url.pathname.startsWith("/api/videos/") && url.pathname.endsWith("/publish")) {
+      const value = decodeURIComponent(
+        url.pathname.slice("/api/videos/".length, -"/publish".length),
+      );
+      return handlePublishVideo(value, env);
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/api/playback/")) {
+      const value = decodeURIComponent(url.pathname.slice("/api/playback/".length));
+      return handleGetPlayback(value, env);
+    }
+
     if (request.method === "GET" && url.pathname.startsWith("/api/videos/")) {
       const value = decodeURIComponent(url.pathname.slice("/api/videos/".length));
       return handleGetVideo(value, env);
@@ -186,6 +198,85 @@ async function handleSyncVideo(value: string, env: Env): Promise<Response> {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected status sync error";
+    return json({ error: message }, 500);
+  }
+}
+
+async function handlePublishVideo(value: string, env: Env): Promise<Response> {
+  try {
+    assertEnv(env);
+
+    const videos = new D1VideoRepository(env.DB);
+    const video = await findVideo(value, env);
+
+    if (!video) {
+      return json({ error: "Video not found" }, 404);
+    }
+
+    if (video.status === "published") {
+      return json({ video: toVideoResource(video) });
+    }
+
+    if (!video.providerAssetId) {
+      return json({ error: "Video has no media provider asset" }, 409);
+    }
+
+    const providerStatus = await createMedia(env).getAssetStatus(video.providerAssetId);
+    if (!providerStatus.readyToStream && providerStatus.state !== "ready") {
+      return json(
+        {
+          error: "Video is not ready to publish",
+          status: mapProviderStatus(providerStatus.state, providerStatus.readyToStream),
+        },
+        409,
+      );
+    }
+
+    const now = new Date().toISOString();
+    video.status = "published";
+    video.publishedAt = now;
+    video.updatedAt = now;
+    await videos.save(video);
+
+    const playback = await createMedia(env).getPlaybackSource(video.providerAssetId);
+
+    return json({
+      video: toVideoResource(video),
+      playback: {
+        hlsUrl: playback.hlsUrl ?? null,
+        dashUrl: playback.dashUrl ?? null,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected publish error";
+    return json({ error: message }, 500);
+  }
+}
+
+async function handleGetPlayback(value: string, env: Env): Promise<Response> {
+  try {
+    assertEnv(env);
+
+    const video = await findVideo(value, env);
+    if (!video || video.status !== "published") {
+      return json({ error: "Published video not found" }, 404);
+    }
+
+    if (!video.providerAssetId) {
+      return json({ error: "Video has no media provider asset" }, 409);
+    }
+
+    const playback = await createMedia(env).getPlaybackSource(video.providerAssetId);
+
+    return json({
+      video: toVideoResource(video),
+      playback: {
+        hlsUrl: playback.hlsUrl ?? null,
+        dashUrl: playback.dashUrl ?? null,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected playback error";
     return json({ error: message }, 500);
   }
 }
