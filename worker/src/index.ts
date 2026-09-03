@@ -27,6 +27,15 @@ export default {
       return handleCreateUpload(request, env);
     }
 
+    if (request.method === "GET" && url.pathname === "/api/videos") {
+      return handleListVideos(env);
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/api/videos/")) {
+      const value = decodeURIComponent(url.pathname.slice("/api/videos/".length));
+      return handleGetVideo(value, env);
+    }
+
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true });
     }
@@ -102,6 +111,62 @@ async function handleCreateUpload(request: Request, env: Env): Promise<Response>
   }
 }
 
+async function handleListVideos(env: Env): Promise<Response> {
+  try {
+    assertDatabase(env);
+    const videos = new D1VideoRepository(env.DB);
+    const items = await videos.listByChannel(CHANNEL_ID);
+
+    return json({
+      creatorId: CREATOR_ID,
+      channelId: CHANNEL_ID,
+      videos: items.map(toVideoResource),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected catalog error";
+    return json({ error: message }, 500);
+  }
+}
+
+async function handleGetVideo(value: string, env: Env): Promise<Response> {
+  try {
+    assertDatabase(env);
+
+    if (!value) {
+      return json({ error: "Video ID or slug is required" }, 400);
+    }
+
+    const videos = new D1VideoRepository(env.DB);
+    const video = value.startsWith("video_")
+      ? await videos.findById(value)
+      : await videos.findBySlug(value);
+
+    if (!video || video.channelId !== CHANNEL_ID) {
+      return json({ error: "Video not found" }, 404);
+    }
+
+    return json({ video: toVideoResource(video) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected catalog error";
+    return json({ error: message }, 500);
+  }
+}
+
+function toVideoResource(video: Video) {
+  return {
+    id: video.id,
+    creatorId: video.creatorId,
+    channelId: video.channelId,
+    slug: video.slug,
+    title: video.title,
+    description: video.description ?? null,
+    status: video.status,
+    publishedAt: video.publishedAt ?? null,
+    createdAt: video.createdAt,
+    updatedAt: video.updatedAt,
+  };
+}
+
 async function createUniqueSlug(
   videos: D1VideoRepository,
   title: string,
@@ -132,6 +197,12 @@ async function readJson<T>(request: Request): Promise<T> {
   }
 
   return (await request.json()) as T;
+}
+
+function assertDatabase(env: Env): void {
+  if (!env.DB) {
+    throw new Error("Missing environment binding: DB");
+  }
 }
 
 function assertEnv(env: Env): void {
