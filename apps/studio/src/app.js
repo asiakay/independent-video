@@ -21,9 +21,14 @@ form.addEventListener('submit', async (event) => {
 
   workflow.hidden = false;
   publishButton.disabled = true;
-  setStatus('Creating video record…', 5);
+  setStatus('Reading video duration…', 2);
 
   try {
+    const durationSeconds = await getVideoDurationSeconds(file);
+    const maxDurationSeconds = Math.max(10, Math.ceil(durationSeconds) + 5);
+
+    setStatus(`Creating video record… (${Math.ceil(durationSeconds)}s video)`, 5);
+
     const createResponse = await fetch('/api/uploads', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -31,6 +36,7 @@ form.addEventListener('submit', async (event) => {
         title: titleInput.value,
         description: descriptionInput.value,
         filename: file.name,
+        maxDurationSeconds,
       }),
     });
 
@@ -51,7 +57,13 @@ form.addEventListener('submit', async (event) => {
     }
 
     setStatus('Upload complete. Cloudflare is processing the video.', 60);
-    render({ videoId: currentVideoId, slug: currentSlug, status: 'processing' });
+    render({
+      videoId: currentVideoId,
+      slug: currentSlug,
+      status: 'processing',
+      durationSeconds,
+      maxDurationSeconds,
+    });
   } catch (error) {
     setStatus(error instanceof Error ? error.message : 'Unexpected upload error', 0);
   }
@@ -98,6 +110,31 @@ publishButton.addEventListener('click', async () => {
     setStatus(error instanceof Error ? error.message : 'Unexpected publish error', progressEl.value);
   }
 });
+
+function getVideoDurationSeconds(file) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    const objectUrl = URL.createObjectURL(file);
+
+    video.preload = 'metadata';
+    video.onloadedmetadata = () => {
+      const duration = video.duration;
+      URL.revokeObjectURL(objectUrl);
+
+      if (!Number.isFinite(duration) || duration <= 0) {
+        reject(new Error('Could not determine video duration.'));
+        return;
+      }
+
+      resolve(duration);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read video metadata.'));
+    };
+    video.src = objectUrl;
+  });
+}
 
 function setStatus(message, progress) {
   statusEl.textContent = message;
