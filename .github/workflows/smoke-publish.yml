@@ -1,0 +1,137 @@
+name: Smoke test publishing flow
+
+# Controlled, manual-only end-to-end check of:
+#   Studio upload -> Cloudflare Stream processing -> D1 published -> HLS manifest plays.
+#
+# Uploads the selected ref as a Worker *preview version* (wrangler versions upload),
+# so production traffic stays on the currently deployed version. The preview shares
+# the production D1 database and Stream account, so the test video is removed
+# afterwards unless `cleanup` is unchecked.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup:
+        description: Delete the smoke-test video from Stream and D1 afterwards
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-publish
+  cancel-in-progress: false
+
+env:
+  D1_DATABASE_NAME: independent-video
+  PREVIEW_ALIAS: smoke
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          npm install
+          npm install --no-save wrangler@latest
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Generate short test clip
+        run: |
+          ffmpeg -loglevel error -y \
+            -f lavfi -i testsrc=size=640x360:rate=24 \
+            -f lavfi -i sine=frequency=440 \
+            -t 4 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest \
+            "$RUNNER_TEMP/smoke-clip.mp4"
+          ls -l "$RUNNER_TEMP/smoke-clip.mp4"
+
+      - name: Upload preview version (no production traffic change)
+        id: preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler versions upload \
+            --preview-alias "$PREVIEW_ALIAS" \
+            --message "smoke ${GITHUB_SHA::7} run ${GITHUB_RUN_ID}" | tee "$RUNNER_TEMP/versions-upload.txt"
+          URL=$(grep -oE "https://${PREVIEW_ALIAS}-[A-Za-z0-9.-]+\.workers\.dev" "$RUNNER_TEMP/versions-upload.txt" | head -1 || true)
+          if [ -z "$URL" ]; then
+            echo "::error::Could not find the preview alias URL in wrangler output"
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Preview URL: $URL"
+
+      - name: Wait for preview to answer
+        shell: bash
+        run: |
+          for i in $(seq 1 24); do
+            if curl -fsS "${{ steps.preview.outputs.url }}/health"; then exit 0; fi
+            sleep 5
+          done
+          echo "::error::Preview never became healthy"; exit 1
+
+      - name: Run end-to-end smoke test
+        id: smoke
+        run: node scripts/smoke-publish.mjs "${{ steps.preview.outputs.url }}" "$RUNNER_TEMP/smoke-clip.mp4"
+
+      - name: Verify D1 row directly
+        id: d1
+        env:
+          VIDEO_ID: ${{ steps.smoke.outputs.video_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VIDEO_ID" =~ ^video_[0-9a-f-]{36}$ ]] || { echo "::error::unexpected video id"; exit 1; }
+          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT id, slug, status, published_at, provider_asset_id FROM videos WHERE id = '$VIDEO_ID'" \
+            > "$RUNNER_TEMP/d1.json"
+          cat "$RUNNER_TEMP/d1.json"
+          node -e '
+            const out = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            const row = out[0]?.results?.[0];
+            if (!row) { console.error("row not found"); process.exit(1); }
+            if (row.status !== "published" || !row.published_at) { console.error("row not published", row); process.exit(1); }
+            console.log(`D1 row ${row.id}: status=${row.status} published_at=${row.published_at}`);
+            require("fs").appendFileSync(process.env.GITHUB_OUTPUT, `provider_asset_id=${row.provider_asset_id}\n`);
+          ' "$RUNNER_TEMP/d1.json"
+
+      - name: Decode HLS manifest with ffmpeg
+        env:
+          HLS_URL: ${{ steps.smoke.outputs.hls_url }}
+        run: |
+          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height -of compact "$HLS_URL"
+          ffmpeg -v error -i "$HLS_URL" -t 3 -f null - && echo "HLS decoded successfully"
+
+      - name: Clean up smoke-test video
+        if: always() && inputs.cleanup && steps.smoke.outputs.video_id != ''
+        env:
+          VIDEO_ID: ${{ steps.smoke.outputs.video_id }}
+          STREAM_TOKEN: ${{ secrets.CLOUDFLARE_STREAM_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$VIDEO_ID" =~ ^video_[0-9a-f-]{36}$ ]] || exit 0
+          ASSET=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --json \
+            --command "SELECT provider_asset_id FROM videos WHERE id = '$VIDEO_ID'" \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s)[0]?.results?.[0]?.provider_asset_id||""))')
+          if [[ "$ASSET" =~ ^[0-9a-f]{32}$ ]]; then
+            curl -fsS -X DELETE -H "Authorization: Bearer $STREAM_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/stream/$ASSET" > /dev/null
+            echo "Deleted Stream asset $ASSET"
+          fi
+          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote \
+            --command "DELETE FROM videos WHERE id = '$VIDEO_ID'"
+          echo "Deleted D1 row $VIDEO_ID"
