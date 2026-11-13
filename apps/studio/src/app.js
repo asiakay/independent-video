@@ -47,9 +47,15 @@ form.addEventListener('submit', async (event) => {
     currentSlug = created.slug;
     setStatus('Uploading directly to video storage…', 20);
 
+    // Cloudflare Stream's direct creator upload URL expects multipart/form-data
+    // with the video in a field named "file". Let the browser set the
+    // Content-Type (with boundary) by not passing headers.
+    const uploadBody = new FormData();
+    uploadBody.append('file', file, file.name);
+
     const uploadResponse = await fetch(created.uploadUrl, {
       method: 'POST',
-      body: file,
+      body: uploadBody,
     });
 
     if (!uploadResponse.ok) {
